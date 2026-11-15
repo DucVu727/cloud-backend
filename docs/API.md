@@ -1,0 +1,198 @@
+# Tài liệu API
+
+Base URL: `http://localhost:3000/api`. Mọi request và response đều là JSON.
+
+**Xác thực**: header `Authorization: Bearer <token>`. Khi `AUTH_MODE=mock`, token có dạng `mock:<userId>:<customer|admin>`.
+
+**Lỗi** luôn có dạng:
+
+```json
+{ "error": { "code": "SOLD_OUT", "message": "Hạng vé này đã hết", "details": { "requested": 1, "available": 0 } } }
+```
+
+**Phân trang**: query `page` (mặc định 1) và `limit` (mặc định 20, tối đa 100). Response trả kèm
+`pagination: { page, limit, total, totalPages }`.
+
+---
+
+## 1. Công khai (không cần đăng nhập)
+
+### `GET /events`
+Danh sách sự kiện đang mở bán (PUBLISHED, chưa kết thúc).
+
+| Query | Ý nghĩa |
+|---|---|
+| `category` | Lọc theo loại hình (`concert`, `sport`, `conference`, …) |
+| `q` | Tìm theo tên sự kiện hoặc địa điểm |
+| `from`, `to` | Khoảng thời gian bắt đầu (ISO 8601) |
+| `includePast` | `true` để lấy cả sự kiện đã kết thúc |
+
+```json
+{
+  "data": [{
+    "id": "…", "title": "Đêm nhạc Mùa Đông 2026", "category": "concert", "venue": "Nhà hát Lớn Hà Nội",
+    "startTime": "2026-12-11T12:00:00.000Z", "endTime": "…", "status": "PUBLISHED", "imageUrl": null,
+    "minPrice": 350000, "maxPrice": 3000000, "totalAvailable": 348
+  }],
+  "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
+}
+```
+
+### `GET /events/categories`
+Các loại hình đang có sự kiện, dùng cho bộ lọc: `{ "data": [{ "category": "concert", "eventCount": 1 }] }`
+
+### `GET /events/:eventId`
+Chi tiết sự kiện kèm hạng vé, giá và số lượng còn lại. Trả 404 nếu sự kiện không tồn tại hoặc là DRAFT.
+
+```json
+{
+  "id": "…", "title": "…", "category": "concert", "…": "…",
+  "ticketTypes": [{
+    "id": "…", "name": "VIP", "price": 1200000,
+    "totalQuantity": 50, "availableQuantity": 49, "reservedQuantity": 1, "soldOut": false
+  }]
+}
+```
+
+---
+
+## 2. Khách hàng (cần đăng nhập)
+
+### `POST /orders`: đặt vé
+```json
+{ "ticketTypeId": "uuid", "quantity": 2 }
+```
+- Người đặt lấy từ token, giá lấy từ DB. Các trường `price`/`userId` mà client gửi kèm đều bị bỏ qua.
+- Header tùy chọn `Idempotency-Key: <chuỗi>`: nếu gửi lại cùng key (ví dụ người dùng bấm hai lần), server trả về đơn cũ với mã 200 và không tạo đơn mới.
+- Thành công: **201** kèm đối tượng đơn (xem bên dưới).
+
+| Mã lỗi | HTTP | Khi nào |
+|---|---|---|
+| `SOLD_OUT` | 409 | Hạng vé đã hết |
+| `INSUFFICIENT_TICKETS` | 409 | Số vé yêu cầu lớn hơn số còn lại; `details.available` cho biết số còn lại |
+| `QUANTITY_EXCEEDS_LIMIT` | 422 | Vượt `MAX_TICKETS_PER_ORDER` |
+| `EVENT_NOT_OPEN` / `EVENT_CANCELLED` / `EVENT_ALREADY_STARTED` | 409 | Sự kiện chưa mở bán, đã bị hủy hoặc đã diễn ra |
+| `TICKET_TYPE_NOT_FOUND` | 404 | |
+| `IDEMPOTENCY_KEY_REUSED` | 422 | Dùng lại key cho một yêu cầu khác |
+
+**Đối tượng đơn**
+```json
+{
+  "id": "…", "userId": "alice", "status": "CONFIRMED", "quantity": 2,
+  "unitPrice": 350000, "totalAmount": 700000, "currency": "VND",
+  "event": { "id": "…", "title": "…", "category": "concert", "venue": "…", "startTime": "…", "status": "PUBLISHED" },
+  "ticketType": { "id": "…", "name": "Thường" },
+  "createdAt": "…", "cancelledAt": null, "cancelledBy": null, "cancelReason": null,
+  "cancellationDeadline": "2026-12-10T12:00:00.000Z", "canCancel": true
+}
+```
+
+### `GET /orders?status=CONFIRMED|CANCELLED`
+Danh sách đơn **của người đang đăng nhập**, sắp xếp mới nhất trước.
+
+### `GET /orders/:orderId`
+Chi tiết đơn. Nếu đơn của người khác, server trả **404 `ORDER_NOT_FOUND`** để không tiết lộ đơn đó có tồn tại hay không.
+
+### `POST /orders/:orderId/cancel`
+Body tùy chọn: `{ "reason": "…" }`. Server cập nhật trạng thái và hoàn vé trong cùng một giao dịch.
+
+| Mã lỗi | HTTP | Khi nào |
+|---|---|---|
+| `ORDER_ALREADY_CANCELLED` | 409 | Đơn đã hủy trước đó; vé **không** được hoàn thêm lần nữa |
+| `CANCELLATION_WINDOW_CLOSED` | 422 | Còn ít hơn `CANCELLATION_DEADLINE_HOURS` giờ trước giờ diễn |
+| `ORDER_NOT_FOUND` | 404 | Đơn không tồn tại hoặc là đơn của người khác |
+
+Quy tắc hủy: khách được hủy khi còn ≥ N giờ trước giờ diễn. Nếu sự kiện đã bị hủy thì khách được hủy đơn bất cứ lúc nào. Admin luôn được hủy.
+
+### `GET /me`
+Trả thông tin người đang đăng nhập `{ userId, role }`, dùng để kiểm tra token.
+
+---
+
+## 3. Quản trị (role = admin)
+
+Khách gọi các API này nhận **403 FORBIDDEN**, chưa đăng nhập nhận **401**.
+
+| Method & path | Mô tả |
+|---|---|
+| `GET /admin/events?status=&category=&q=&includePast=` | Danh sách sự kiện mọi trạng thái |
+| `POST /admin/events` | Tạo sự kiện, có thể kèm hạng vé |
+| `GET /admin/events/:id` | Chi tiết, kể cả DRAFT |
+| `PATCH /admin/events/:id` | Sửa một phần (title, description, category, venue, startTime, endTime, status, imageUrl) |
+| `POST /admin/events/:id/ticket-types` | Thêm hạng vé |
+| `PATCH /admin/ticket-types/:id` | Sửa hạng vé (name, description, price, totalQuantity) |
+| `GET /admin/orders?eventId=&status=&ticketTypeId=&userId=` | Tra đơn, trả kèm `summary` theo trạng thái |
+| `GET /admin/orders/:id` | Chi tiết đơn bất kỳ |
+| `POST /admin/orders/:id/cancel` | Hủy đơn, không bị giới hạn bởi hạn hủy |
+| `GET /admin/outbox/stats` | Số sự kiện gửi Azure theo trạng thái PENDING/SENT/FAILED |
+| `GET /admin/outbox?status=FAILED&limit=50` | Danh sách sự kiện outbox kèm lỗi gần nhất |
+| `POST /admin/outbox/retry` | Body `{ "ids": [...] }` (bỏ trống để gửi lại tất cả). Đưa về PENDING rồi gửi ngay |
+| `POST /admin/outbox/dispatch` | Chạy worker một lượt ngay lập tức |
+| `GET /admin/stats/daily?from=&to=&eventId=` | Thống kê theo từng ngày, giờ VN. Đủ mọi ngày trong khoảng, mặc định 30 ngày gần nhất, tối đa 366 ngày |
+| `GET /admin/stats/events?from=&to=` | Thống kê theo sự kiện, kèm `eventTitle` |
+| `GET /admin/stats/events/:id?from=&to=` | Thống kê của một sự kiện, nằm ở trường `item` |
+| `GET /admin/orders/:id/azure-sync` | Đối soát: Azure đã xử lý từng thông điệp của đơn chưa (`processedByAzure`) |
+
+**Tạo sự kiện**
+```json
+{
+  "title": "Đêm nhạc", "description": "…", "category": "concert", "venue": "Nhà hát Lớn",
+  "startTime": "2026-12-31T19:00:00+07:00", "endTime": "2026-12-31T22:00:00+07:00",
+  "status": "DRAFT", "imageUrl": null,
+  "ticketTypes": [{ "name": "VIP", "price": 1200000, "totalQuantity": 50 }]
+}
+```
+
+Quy tắc kiểm tra dữ liệu:
+- `price` ≥ 0, tối đa 2 chữ số thập phân
+- `totalQuantity` là số nguyên ≥ 0
+- `endTime` phải sau `startTime`
+- Tên hạng vé không trùng trong cùng một sự kiện (trùng thì trả 409 `TICKET_TYPE_NAME_TAKEN`)
+- `category` gồm chữ thường không dấu (ví dụ `concert`)
+- Sự kiện đã CANCELLED thì không mở lại được
+
+**Giảm số lượng vé**: nếu `totalQuantity` mới nhỏ hơn số vé đang được giữ trong các đơn CONFIRMED, server trả
+`409 QUANTITY_BELOW_RESERVED` với `details: { requested, reserved }`.
+
+**Thống kê**: số vé lấy từ Azure (chậm khoảng 1–2 phút), doanh thu lấy từ DB GCP (thời gian thực).
+
+```json
+{
+  "source": "azure", "stale": false, "fetchedAt": "2026-11-12T07:40:01.000Z",
+  "query": { "groupBy": "day", "from": "2026-10-14", "to": "2026-11-12", "fillGaps": true },
+  "items": [{
+    "key": "2026-11-12",
+    "bookedTickets": 3, "cancelledTickets": 3, "bookedOrders": 1, "cancelledOrders": 1, "netTickets": 0,
+    "bookedRevenue": 300000, "cancelledRevenue": 300000, "netRevenue": 0
+  }],
+  "totals": { "bookedTickets": 11, "…": "…", "netRevenue": 4900000 },
+  "notes": { "tickets": "…", "revenue": "…" }
+}
+```
+
+- Với `groupBy=day`, `key` là ngày `YYYY-MM-DD`. Với `groupBy=event`, `key` là `eventId` và có thêm `eventTitle`.
+- `bookedOrders` / `cancelledOrders` là **số lần** đặt/hủy; các trường `...Tickets` là **số vé**.
+- Khi Azure lỗi nhưng còn dữ liệu cũ trong cache, server trả về dữ liệu đó với `stale: true`.
+- Tham số `from`/`to` có dạng `YYYY-MM-DD` và phải thỏa `from ≤ to`. Sai thì nhận 400 `VALIDATION_ERROR`.
+
+| Mã lỗi | HTTP | Khi nào |
+|---|---|---|
+| `STATS_BAD_REQUEST` | 400 | Azure từ chối tham số |
+| `STATS_UNAVAILABLE` | 503 | Không kết nối được Azure |
+| `STATS_TIMEOUT` | 504 | Azure phản hồi quá chậm |
+| `STATS_UPSTREAM_ERROR` | 502 | Azure trả lỗi 5xx hoặc dữ liệu không phải JSON |
+| `STATS_AUTH_FAILED` | 502 | Sai key Azure |
+| `STATS_NOT_FOUND` | 404 | Không có thống kê cho mục được hỏi |
+
+---
+
+## 4. Mã lỗi chung
+
+| Mã | HTTP |
+|---|---|
+| `VALIDATION_ERROR` | 400. `details` là mảng `{ path, message }` |
+| `INVALID_JSON` | 400 |
+| `UNAUTHORIZED` | 401 |
+| `FORBIDDEN` | 403 |
+| `AUTH_SERVICE_UNAVAILABLE` | 503 |
+| `INTERNAL_ERROR` | 500 |
