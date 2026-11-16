@@ -1,5 +1,7 @@
 # Backend quản lý sự kiện & đặt vé (GCP)
 
+> Bản tích hợp GCP ngày 16/11/2026 dùng JWT, `DB_POOL_MAX=5`, `STATS_TIMEOUT_MS=60000`, `CORS_ORIGIN` nhiều origin cách nhau bằng dấu phẩy và `OUTBOX_BATCH_SIZE=1`. Bộ test sau sửa có 55 test. Script triển khai riêng của project do Dương quản lý.
+
 Dịch vụ sở hữu **dữ liệu đơn chính thức** của hệ thống: sự kiện, hạng vé, đơn đặt vé.
 Mọi thay đổi đơn (đặt / hủy) được ghi kèm một sự kiện vào **outbox** trong cùng giao dịch,
 rồi worker gửi sang Azure (phần thống kê) và tự động gửi lại khi Azure lỗi.

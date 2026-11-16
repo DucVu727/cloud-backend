@@ -36,8 +36,15 @@ export function createApp(deps: AppDeps): { app: Express; services: Services } {
   app.use(express.json({ limit: '100kb' }));
 
   // CORS cho frontend
+  const allowedOrigins = deps.config.corsOrigin.split(',').map((origin) => origin.trim()).filter(Boolean);
   app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', deps.config.corsOrigin);
+    const origin = req.get('Origin');
+    res.vary('Origin');
+    if (allowedOrigins.includes('*')) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    } else if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
     res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Idempotency-Key');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, OPTIONS');
     if (req.method === 'OPTIONS') {

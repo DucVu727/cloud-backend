@@ -17,4 +17,4 @@ COPY migrations ./migrations
 COPY dev-console ./dev-console
 EXPOSE 3000
 # Cloud Run: chạy migration rồi khởi động server
-CMD ["sh", "-c", "node dist/scripts/migrate.js && node dist/server.js"]
+CMD ["sh", "-c", "node dist/scripts/migrate.js && exec node dist/server.js"]

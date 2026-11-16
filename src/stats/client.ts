@@ -295,7 +295,7 @@ export class StatsService {
     try {
       return await fn();
     } catch (err) {
-      if (err instanceof AppError && (err.status === 503 || err.status === 502) && err.code !== 'STATS_AUTH_FAILED') {
+      if (err instanceof AppError && [502, 503, 504].includes(err.status) && err.code !== 'STATS_AUTH_FAILED') {
         await new Promise((r) => setTimeout(r, 300));
         return fn();
       }
@@ -323,7 +323,7 @@ export class StatsService {
     let historyText = '';
     let historyError: string | null = null;
     try {
-      historyText = JSON.stringify(await this.source.history(orderId));
+      historyText = JSON.stringify(await this.withRetry(() => this.source.history(orderId)));
     } catch (err) {
       historyError = err instanceof AppError ? `${err.code}: ${err.message}` : String(err);
     }

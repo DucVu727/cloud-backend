@@ -10,7 +10,10 @@ export type Tx = PoolClient;
 export type Queryable = Pick<Pool, 'query'> | PoolClient;
 
 export function createPool(connectionString = config.databaseUrl): Pool {
-  return new Pool({ connectionString, max: 20 });
+  if (!Number.isInteger(config.dbPoolMax) || config.dbPoolMax < 1) {
+    throw new Error('DB_POOL_MAX phải là số nguyên dương');
+  }
+  return new Pool({ connectionString, max: config.dbPoolMax });
 }
 
 /**

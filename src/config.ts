@@ -24,6 +24,7 @@ export const config = {
   port: int('PORT', 3000),
   nodeEnv: str('NODE_ENV', 'development'),
   databaseUrl: str('DATABASE_URL', 'postgres://ticketing:ticketing@localhost:5432/ticketing'),
+  dbPoolMax: int('DB_POOL_MAX', 5),
   corsOrigin: str('CORS_ORIGIN', '*'),
   /** Trang test /dev - mặc định chỉ bật khi KHÔNG phải production */
   devConsole: bool('DEV_CONSOLE', str('NODE_ENV', 'development') !== 'production'),
@@ -64,7 +65,7 @@ export const config = {
     url: str('AZURE_STATS_URL'),
     /** x-functions-key - BÍ MẬT, không đưa cho frontend */
     key: str('AZURE_STATS_KEY'),
-    timeoutMs: int('STATS_TIMEOUT_MS', 4000),
+    timeoutMs: int('STATS_TIMEOUT_MS', 60000),
     cacheTtlMs: int('STATS_CACHE_TTL_MS', 30000),
   },
 };
