@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppError } from '../src/errors';
 import { HttpStatsSource, StatsService } from '../src/stats/client';
 import { ADMIN, ALICE, BOB, book, createEvent, setupTestApp } from './helpers';
@@ -151,6 +151,42 @@ describe('Thống kê - nguồn Azure thật (server giả lập)', () => {
     expect(r.stale).toBe(true);
     expect(r.totals.bookedTickets).toBe(7);
     expect(await code(s.get({ groupBy: 'day', from: '2026-11-01', to: '2026-11-02', fillGaps: true }))).toBe('502 STATS_UPSTREAM_ERROR');
+  });
+
+  it('log minh chứng: ghi status 200 THẬT khi Azure trả dữ liệu; không ghi khi trả cache hoặc lỗi; không lộ khóa', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const lines = () => spy.mock.calls.map((c) => JSON.parse(String(c[0])));
+    try {
+      mode = 'ok';
+      fakeItems = [{ key: 'e1', ...counts(1, 0) }];
+      const cached = new StatsService(new HttpStatsSource(azureUrl, 'very-secret-key', 500), ctx.db, 60_000);
+      await cached.get({ groupBy: 'event', eventId: '7d0f6a2e-1111-4a4a-9b9b-000000000001' });
+      expect(lines()).toEqual([
+        { severity: 'INFO', event: 'azure_stats_request_succeeded', httpStatus: 200, path: '/stats', groupBy: 'event', eventId: '7d0f6a2e-1111-4a4a-9b9b-000000000001' },
+      ]);
+      await cached.get({ groupBy: 'event', eventId: '7d0f6a2e-1111-4a4a-9b9b-000000000001' }); // trúng cache => không gọi Azure, không ghi log
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      await cached.get({ groupBy: 'day', from: '2026-11-01', to: '2026-11-01', fillGaps: true });
+      expect(lines()[1]).toEqual({ severity: 'INFO', event: 'azure_stats_request_succeeded', httpStatus: 200, path: '/stats', groupBy: 'day' });
+
+      const ev = await createEvent(ctx);
+      const o = await book(ctx, ALICE, ev.ticketTypes[0].id, 1);
+      await cached.orderSync(o.body.id);
+      expect(lines()[2]).toEqual({ severity: 'INFO', event: 'azure_stats_request_succeeded', httpStatus: 200, path: '/history', orderId: o.body.id });
+
+      expect(JSON.stringify(spy.mock.calls)).not.toMatch(/very-secret-key|127\.0\.0\.1/);
+
+      spy.mockClear();
+      mode = 'badshape'; // 200 nhưng sai định dạng => không phải "thành công"
+      await code(svc().get({ groupBy: 'event' }));
+      mode = 'error500';
+      await code(svc().get({ groupBy: 'event' }));
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      mode = 'ok';
+    }
   });
 
   it('đối soát dựa vào /history: tìm đúng messageId', async () => {

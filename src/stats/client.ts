@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 import { z } from 'zod';
 import type { Config } from '../config';
 import { AppError } from '../errors';
+import { logInfo } from '../lib/log';
 
 // =============================================================================
 // Kiểu dữ liệu theo API thống kê của Azure (docs/azure-message-contract.md)
@@ -56,14 +57,18 @@ export class HttpStatsSource implements StatsSource {
   }
 
   async stats(q: AzureStatsQuery): Promise<AzureStatsResult> {
-    const body = await this.get(`/stats?${toQueryString(q)}`);
+    const { status, body } = await this.get('/stats', toQueryString(q));
     const parsed = azureStatsSchema.safeParse(body);
     if (!parsed.success) throw new AppError(502, 'STATS_UPSTREAM_ERROR', 'Dữ liệu thống kê từ Azure không đúng định dạng đã thống nhất');
+    // chỉ ghi khi Azure thật sự trả dữ liệu hợp lệ (cache không đi qua đây => không có 200 giả)
+    logInfo('azure_stats_request_succeeded', { httpStatus: status, path: '/stats', groupBy: q.groupBy, eventId: q.eventId });
     return parsed.data;
   }
 
-  history(orderId: string): Promise<unknown> {
-    return this.get(`/history?${new URLSearchParams({ orderId })}`);
+  async history(orderId: string): Promise<unknown> {
+    const { status, body } = await this.get('/history', new URLSearchParams({ orderId }).toString());
+    logInfo('azure_stats_request_succeeded', { httpStatus: status, path: '/history', orderId });
+    return body;
   }
 
   /**
@@ -71,10 +76,10 @@ export class HttpStatsSource implements StatsSource {
    *   quá thời gian -> 504 STATS_TIMEOUT | không kết nối -> 503 STATS_UNAVAILABLE | 5xx -> 502 STATS_UPSTREAM_ERROR
    *   401/403 -> 502 STATS_AUTH_FAILED (sai khóa) | 400 -> 400 STATS_BAD_REQUEST (kèm thông báo của Azure) | 404 -> 404
    */
-  private async get(pathAndQuery: string): Promise<unknown> {
+  private async get(path: '/stats' | '/history', query: string): Promise<{ status: number; body: unknown }> {
     let res: Response;
     try {
-      res = await fetch(this.baseUrl.replace(/\/$/, '') + pathAndQuery, {
+      res = await fetch(`${this.baseUrl.replace(/\/$/, '')}${path}?${query}`, {
         headers: { Accept: 'application/json', ...(this.key ? { 'x-functions-key': this.key } : {}) },
         signal: AbortSignal.timeout(this.timeoutMs),
       });
@@ -93,7 +98,7 @@ export class HttpStatsSource implements StatsSource {
     if (res.status === 401 || res.status === 403) throw new AppError(502, 'STATS_AUTH_FAILED', 'Xác thực với dịch vụ thống kê thất bại (kiểm tra AZURE_STATS_KEY)');
     if (!res.ok) throw new AppError(502, 'STATS_UPSTREAM_ERROR', `Dịch vụ thống kê trả lỗi ${res.status}`);
     try {
-      return await res.json();
+      return { status: res.status, body: await res.json() };
     } catch {
       throw new AppError(502, 'STATS_UPSTREAM_ERROR', 'Dịch vụ thống kê trả dữ liệu không phải JSON');
     }

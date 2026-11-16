@@ -109,7 +109,7 @@ export function buildRoutes(s: Services): Router {
     res.json(await s.events.getById(id(req.params.eventId), false));
   });
   admin.patch('/events/:eventId', async (req, res) => {
-    res.json(await s.events.update(id(req.params.eventId), eventUpdateSchema.parse(req.body)));
+    res.json(await s.events.update(id(req.params.eventId), eventUpdateSchema.parse(req.body), currentUser(req).userId));
   });
   admin.post('/events/:eventId/ticket-types', async (req, res) => {
     res.status(201).json(await s.events.addTicketType(id(req.params.eventId), ticketTypeInputSchema.parse(req.body)));

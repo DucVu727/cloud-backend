@@ -1,6 +1,6 @@
 # Backend quản lý sự kiện & đặt vé (GCP)
 
-> Bản tích hợp GCP ngày 16/11/2026 dùng JWT, `DB_POOL_MAX=5`, `STATS_TIMEOUT_MS=60000`, `CORS_ORIGIN` nhiều origin cách nhau bằng dấu phẩy và `OUTBOX_BATCH_SIZE=1`. Bộ test sau sửa có 55 test. Script triển khai riêng của project do Dương quản lý.
+> Bản chạy trên GCP dùng JWT, `DB_POOL_MAX=5`, `STATS_TIMEOUT_MS=60000`, `CORS_ORIGIN` nhiều origin cách nhau bằng dấu phẩy và `OUTBOX_BATCH_SIZE=1` (xem mục 4.1). Bộ test có 66 test. Script triển khai riêng của project GCP do Dương quản lý.
 
 Dịch vụ sở hữu **dữ liệu đơn chính thức** của hệ thống: sự kiện, hạng vé, đơn đặt vé.
 Mọi thay đổi đơn (đặt / hủy) được ghi kèm một sự kiện vào **outbox** trong cùng giao dịch,
@@ -44,7 +44,7 @@ Kiểm tra: `curl http://localhost:3000/health`
 ### Trang test thủ công: http://localhost:3000/dev
 
 Đây là một file HTML duy nhất ([dev-console/index.html](dev-console/index.html)), **không phải frontend thật**. Trang này chỉ bật khi
-`NODE_ENV` không phải `production` (có thể ép bật/tắt bằng `DEV_CONSOLE=true/false`) và không được đóng vào Docker image.
+`NODE_ENV` không phải `production` (có thể ép bật/tắt bằng `DEV_CONSOLE=true/false`). File có trong Docker image nhưng bản cloud đặt `DEV_CONSOLE=false`.
 
 | Tab | Thử được gì |
 |---|---|
@@ -79,6 +79,20 @@ curl -H "Authorization: Bearer mock:alice:customer" http://localhost:3000/api/or
 curl -H "Authorization: Bearer mock:admin1:admin" http://localhost:3000/api/admin/orders
 ```
 
+### Tạo token test khi `AUTH_MODE=jwt`
+
+Bản cloud **không nhận** token `mock:`. Để thử API, tạo JWT ngắn hạn (HS256, claim `sub` và `role`) bằng cùng secret mà server dùng:
+
+```powershell
+# nạp secret vào biến môi trường của phiên terminal, KHÔNG ghi ra file
+$env:AUTH_JWT_SECRET = gcloud secrets versions access 1 --secret=ticket-jwt-secret
+$token = npm run --silent token -- --sub admin1 --role admin --ttl 30
+curl.exe -H "Authorization: Bearer $token" https://ticket-api-5iqotxgmrq-as.a.run.app/api/me
+Remove-Item Env:AUTH_JWT_SECRET
+```
+
+Script chỉ in token ra màn hình. Không dán token vào log, tài liệu hay repo. Token hết hạn sau `--ttl` phút (mặc định 60).
+
 ### Chạy kiểm thử
 
 ```bash
@@ -97,6 +111,8 @@ Xem đầy đủ trong [.env.example](.env.example).
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
 | `DATABASE_URL` | postgres://…/ticketing | Chuỗi kết nối Postgres |
+| `DB_POOL_MAX` | `5` | Số kết nối tối đa tới Postgres (Cloud SQL `db-f1-micro` dùng chung nên để nhỏ) |
+| `CORS_ORIGIN` | `*` | Một origin hoặc danh sách cách nhau bằng dấu phẩy (URL các frontend) |
 | `AUTH_MODE` | `mock` | `mock` \| `jwt` \| `http` (xem mục 3) |
 | `CANCELLATION_DEADLINE_HOURS` | `24` | Khách chỉ được hủy khi còn ≥ N giờ trước giờ diễn |
 | `MAX_TICKETS_PER_ORDER` | `10` | Số vé tối đa mỗi đơn |
@@ -104,7 +120,10 @@ Xem đầy đủ trong [.env.example](.env.example).
 | `AZURE_QUEUE_SAS_URL` | | **Bí mật.** URL queue `ticket-events` kèm SAS (chỉ quyền ghi, hết hạn 15/01/2027) |
 | `PUBLISHER_MOCK_FAIL` | `false` | Giả lập Azure lỗi để thử cơ chế gửi lại |
 | `OUTBOX_POLL_INTERVAL_MS` | `5000` | Chu kỳ worker quét outbox |
-| `OUTBOX_MAX_ATTEMPTS` | `10` | Quá số lần thử thì chuyển sang FAILED, chờ admin gửi lại |
+| `OUTBOX_BATCH_SIZE` | `20` | Số thông điệp worker nhận mỗi lượt |
+| `OUTBOX_LEASE_MS` | lô × `AZURE_TIMEOUT_MS` + 30s, tối thiểu 60s | Thời gian một lượt worker giữ lô đã nhận. Thường không cần đặt |
+| `OUTBOX_MAX_ATTEMPTS` | `10` | Quá số lần thử thì chuyển sang FAILED, chờ admin gửi lại. Mức 10 ≈ 36 phút Azure lỗi liên tục, mức 20 ≈ 3 giờ |
+| `STATS_TIMEOUT_MS` | `60000` | Thời gian chờ API thống kê (Azure Function có thể khởi động chậm). Lỗi tạm thời được thử lại 1 lần |
 | `STATS_MODE` | `mock` | `mock` (giả lập API `/stats` của Azure từ DB cục bộ) \| `http` (đọc từ `AZURE_STATS_URL`) |
 | `AZURE_STATS_KEY` | | **Bí mật.** `x-functions-key` của API thống kê, chỉ backend giữ |
 
@@ -131,20 +150,34 @@ Nếu dịch vụ tài khoản không phản hồi, API trả `503 AUTH_SERVICE_
 
 ### 4.1. Biến môi trường khi chạy thật
 
-| Biến | Giá trị | Bí mật? |
+Cấu hình đang chạy trên service `ticket-api` (Dương quản lý, cập nhật 16/11/2026). Biến bí mật lấy từ Secret Manager, **không** có trong repo hay `.env`:
+
+| Biến | Giá trị | Nguồn |
 |---|---|---|
-| `DATABASE_URL` | `postgres://USER:PASS@/ticketing?host=/cloudsql/PROJECT:REGION:INSTANCE` | ✔ (chứa mật khẩu) |
+| `DATABASE_URL` | DB `ticketdb`, user `ticket_backend`, qua socket Cloud SQL `ticket-cloud-514604:asia-southeast1:ticket-db` | Secret `ticket-db-backend-url` |
+| `AUTH_MODE` | `jwt` (HS256) | |
+| `AUTH_JWT_SECRET` | | Secret `ticket-jwt-secret` |
+| `CORS_ORIGIN` | URL của `ticket-web` và `ticket-admin`, cách nhau bằng dấu phẩy | |
+| `DB_POOL_MAX` | `5` | |
+| `NODE_ENV` / `DEV_CONSOLE` | `production` / `false` | |
 | `PUBLISHER_MODE` | `azure-queue` | |
-| `AZURE_QUEUE_SAS_URL` | `https://stticketsinh2026.queue.core.windows.net/ticket-events?<SAS>` (có `/messages` hay không đều được). **Không** dùng `AZURE_QUEUE_NAME` hay connection string | ✔ |
+| `AZURE_QUEUE_SAS_URL` | URL queue `ticket-events` kèm SAS (có `/messages` hay không đều được). **Không** dùng `AZURE_QUEUE_NAME` hay connection string | Secret `azure-queue-url` |
+| `AZURE_TIMEOUT_MS` | `5000` | |
+| `OUTBOX_ENABLED` / `OUTBOX_POLL_INTERVAL_MS` / `OUTBOX_BATCH_SIZE` | `true` / `5000` / `1` | |
 | `STATS_MODE` | `http` | |
 | `AZURE_STATS_URL` | `https://func-ticket-stats-sinh.azurewebsites.net/api`: **địa chỉ gốc**, backend tự nối thêm `/stats?...` và `/history?...` | |
-| `AZURE_STATS_KEY` | `x-functions-key` của API thống kê | ✔ |
-| `AUTH_MODE` | `mock` cho tới khi Backend tài khoản chốt cách xác thực. Nếu dùng `jwt` thì **bắt buộc** có `AUTH_JWT_SECRET`, không có thì server không khởi động | |
-| `DEV_CONSOLE` | `true` nếu muốn mở trang test `/dev` trên bản deploy (mặc định tắt ở production) | |
+| `AZURE_STATS_KEY` | `x-functions-key` của API thống kê | Secret `azure-stats-key` |
+| `STATS_TIMEOUT_MS` | `60000` (request timeout của Cloud Run là 180s, đủ cho 2 lần thử) | |
 
-> ⚠ `AUTH_MODE=mock` nghĩa là **ai có URL cũng tự xưng được là admin** (`Bearer mock:x:admin`). Chỉ chấp nhận được khi demo; phải đổi trước khi dùng thật.
+Các biến không khai báo dùng mặc định ở mục 2 (`CANCELLATION_DEADLINE_HOURS=24`, `MAX_TICKETS_PER_ORDER=10`, `OUTBOX_MAX_ATTEMPTS=10`...). `PORT` do Cloud Run tự đặt.
+**Không** đặt `AUTH_JWT_PUBLIC_KEY`: nếu có giá trị, server chuyển sang RS256 và bỏ qua `AUTH_JWT_SECRET`.
+
+> ⚠ Không chép các biến này vào `.env` ở máy local. Máy local dùng `AUTH_MODE=mock` và `PUBLISHER_MODE=mock` (xem 4.4).
+> ⚠ `AUTH_MODE=mock` nghĩa là **ai có URL cũng tự xưng được là admin** (`Bearer mock:x:admin`). Không bao giờ dùng trên bản cloud.
 
 ### 4.2. Build và deploy
+
+Project của nhóm deploy bằng script của Dương trong `ticket-cloud` (`build-duc-backend.ps1`, `deploy-duc-backend.ps1`, `verify-duc-backend.mjs`). Các lệnh dưới đây là cách làm tổng quát khi tự deploy ở project khác:
 
 ```bash
 # Build image và đẩy lên Artifact Registry
@@ -159,16 +192,18 @@ printf '%s' '<x-functions-key>'   | gcloud secrets create azure-stats-key --data
 gcloud run deploy ticketing-api \
   --image REGION-docker.pkg.dev/PROJECT/ticketing/api \
   --add-cloudsql-instances PROJECT:REGION:INSTANCE \
-  --set-env-vars "AUTH_MODE=mock,PUBLISHER_MODE=azure-queue,STATS_MODE=http,AZURE_STATS_URL=https://func-ticket-stats-sinh.azurewebsites.net/api" \
-  --set-secrets "DATABASE_URL=ticketing-db-url:latest,AZURE_QUEUE_SAS_URL=azure-queue-sas:latest,AZURE_STATS_KEY=azure-stats-key:latest" \
-  --min-instances 1 --no-cpu-throttling \
+  --set-env-vars "NODE_ENV=production,AUTH_MODE=jwt,PUBLISHER_MODE=azure-queue,STATS_MODE=http,AZURE_STATS_URL=https://func-ticket-stats-sinh.azurewebsites.net/api,DB_POOL_MAX=5,STATS_TIMEOUT_MS=60000" \
+  --set-secrets "DATABASE_URL=ticketing-db-url:latest,AUTH_JWT_SECRET=jwt-secret:latest,AZURE_QUEUE_SAS_URL=azure-queue-sas:latest,AZURE_STATS_KEY=azure-stats-key:latest" \
+  --min-instances 1 --max-instances 1 --no-cpu-throttling --cpu-boost --timeout 180 \
   --allow-unauthenticated
 ```
 
 - **`--no-cpu-throttling` và `--min-instances 1` là bắt buộc.** Worker outbox chạy ngầm trong cùng tiến trình. Nếu Cloud Run chỉ cấp CPU khi có request (mặc định), worker sẽ bị dừng và dữ liệu không được gửi sang Azure.
-- Container tự chạy migration khi khởi động. Migration dùng advisory lock nên nhiều instance khởi động cùng lúc vẫn an toàn.
-- Nhiều instance chạy song song không gửi trùng (dùng `FOR UPDATE SKIP LOCKED` kèm lease).
-- Kiểm tra sau khi deploy: `curl https://<URL Cloud Run>/health` phải trả `{"status":"ok","db":"ok","auth":"mock","publisher":"azure-queue"}`.
+- Container tự chạy migration khi khởi động (`exec` để Node nhận SIGTERM và tắt êm). Migration dùng advisory lock nên nhiều instance khởi động cùng lúc vẫn an toàn.
+- Migration **không cần quyền tạo extension**: `gen_random_uuid()` có sẵn từ PostgreSQL 13. User ứng dụng chỉ cần quyền trên schema của mình.
+- Migration `003` chỉ thêm một cột cho phép NULL, nên chạy được trên DB đã có dữ liệu và trong lúc revision cũ còn phục vụ.
+- Nhiều worker chạy song song không gửi trùng: `FOR UPDATE SKIP LOCKED`, lease và mã nhận việc `claim_token`.
+- Kiểm tra sau khi deploy: `curl https://<URL Cloud Run>/health` phải trả `{"status":"ok","db":"ok","auth":"jwt","publisher":"azure-queue"}`.
 
 ### 4.3. Seed dữ liệu demo lên Cloud SQL
 
@@ -185,11 +220,25 @@ gcloud run jobs execute ticketing-seed --wait
 
 - Seed **chỉ chạy khi DB chưa có sự kiện nào**, nên chạy lại cũng không sao.
 - Muốn làm lại từ đầu thì thêm `--args dist/scripts/seed.js,--reset`. ⚠ Lệnh này **xóa toàn bộ** sự kiện, đơn và outbox. Nếu đã gửi dữ liệu sang Azure trước đó, phải nhờ bên Azure xóa phía họ trước, nếu không số liệu sẽ lệch.
-- Sau khi seed khoảng 1–2 phút, kiểm tra: `GET /api/admin/outbox/stats` (header `Authorization: Bearer mock:admin1:admin`) phải cho thấy `SENT: 4`, `PENDING: 0`, `FAILED: 0`.
+- Sau khi seed khoảng 1–2 phút, kiểm tra: `GET /api/admin/outbox/stats` (header `Authorization: Bearer <token admin>`, tạo token như mục 1) phải cho thấy `SENT: 4`, `PENDING: 0`, `FAILED: 0`.
 
 ### 4.4. Lưu ý khi chạy song song máy local và bản deploy
 
 Máy local và bản deploy dùng **cùng một queue Azure**. Khi đã có bản deploy, đặt `PUBLISHER_MODE=mock` trong `.env` ở máy local, để dữ liệu test trên máy không lẫn vào số liệu demo.
+
+### 4.5. Log minh chứng (Cloud Logging)
+
+Mỗi lần gọi Azure **thành công**, backend ghi một dòng JSON. `httpStatus` là mã Azure thật sự trả về:
+
+```json
+{"severity":"INFO","event":"azure_queue_send_succeeded","httpStatus":201,"eventId":"…","orderId":"…","messageId":"…","messageType":"BOOKED"}
+{"severity":"INFO","event":"azure_stats_request_succeeded","httpStatus":200,"path":"/stats","groupBy":"event","eventId":"…"}
+{"severity":"INFO","event":"azure_stats_request_succeeded","httpStatus":200,"path":"/history","orderId":"…"}
+```
+
+- Log `/stats` chỉ ghi khi Azure trả dữ liệu đúng định dạng. Kết quả lấy từ cache không ghi log, nên không có dòng 200 giả.
+- Log không bao giờ chứa URL kèm SAS, function key, JWT hay header Authorization (có test kiểm tra).
+- Lọc trong Logs Explorer: `jsonPayload.event="azure_queue_send_succeeded"` hoặc `jsonPayload.event="azure_stats_request_succeeded"`.
 
 ---
 
@@ -197,16 +246,18 @@ Máy local và bản deploy dùng **cùng một queue Azure**. Khi đã có bả
 
 ```
 migrations/001_init.sql     Schema: events, ticket_types, orders, outbox_events
+migrations/002, 003         outbox_events.sent_via (kênh đã gửi), outbox_events.claim_token (mã nhận việc của worker)
 src/
   app.ts, server.ts         Dựng Express app, khởi động server và worker
   config.ts, db.ts          Cấu hình, pool Postgres, withTransaction()
   errors.ts                 AppError, middleware xử lý lỗi thống nhất
   auth/                     Adapter Backend tài khoản (mock/jwt/http) và middleware phân quyền
-  events/                   Sự kiện và hạng vé: schema validate, service
+  events/                   Sự kiện và hạng vé: schema validate, service (hủy sự kiện => hủy mọi đơn)
   orders/                   Đặt, hủy, tra đơn (giao dịch, chống bán vượt)
   outbox/                   Thông điệp nội bộ, mẫu và validator Azure, gửi qua Storage Queue, worker gửi lại
   stats/                    Đọc /stats và /history của Azure, ghép doanh thu từ DB (timeout, retry, cache, stale)
+  lib/log.ts                Log JSON một dòng cho Cloud Logging
   routes.ts                 Khai báo toàn bộ route
-  scripts/                  migrate.ts, seed.ts
-tests/                      38 test tích hợp chạy trên Postgres thật
+  scripts/                  migrate, seed, make-token (JWT test), azure-smoke, azure-sent-report
+tests/                      66 test tích hợp chạy trên Postgres thật
 ```

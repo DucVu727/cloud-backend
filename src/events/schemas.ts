@@ -57,10 +57,16 @@ export const eventUpdateSchema = z
     endTime: isoDateSchema,
     status: z.enum(EVENT_STATUSES),
     imageUrl: z.url().max(2000).nullable(),
+    /** lý do ghi vào các đơn bị hủy theo sự kiện; chỉ dùng cùng status = CANCELLED */
+    cancelReason: z.string().trim().min(1).max(500),
   })
   .partial()
   .strict()
-  .refine((o) => Object.keys(o).length > 0, 'Cần ít nhất một trường để cập nhật');
+  .refine((o) => Object.keys(o).length > 0, 'Cần ít nhất một trường để cập nhật')
+  .refine((o) => o.cancelReason === undefined || o.status === 'CANCELLED', {
+    message: 'cancelReason chỉ dùng khi đặt status = CANCELLED',
+    path: ['cancelReason'],
+  });
 
 export const eventListQuerySchema = paginationSchema.extend({
   category: z.string().trim().toLowerCase().optional(),

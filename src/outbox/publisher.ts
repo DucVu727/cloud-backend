@@ -1,5 +1,6 @@
 import { AnonymousCredential, QueueClient } from '@azure/storage-queue';
 import type { Config } from '../config';
+import { logInfo } from '../lib/log';
 import { toAzureMessage, validateAzureMessage, type AzureTicketMessage } from './azureMessage';
 import type { OrderEventMessage } from './message';
 
@@ -65,8 +66,10 @@ export class AzureQueuePublisher implements EventPublisher {
 
   async publish(msg: OrderEventMessage): Promise<void> {
     const azureMsg = prepareAzureMessage(msg);
+    let httpStatus: number;
     try {
-      await this.client.sendMessage(JSON.stringify(azureMsg));
+      const res = await this.client.sendMessage(JSON.stringify(azureMsg));
+      httpStatus = res._response.status;
     } catch (err) {
       const e = err as Error & { statusCode?: number; code?: string };
       const status = e.statusCode;
@@ -74,6 +77,14 @@ export class AzureQueuePublisher implements EventPublisher {
       const detail = redactSecrets(`${status ?? e.code ?? 'NETWORK'}: ${e.message}`).slice(0, 500);
       throw new PublishError(`Azure Queue lỗi ${detail}${hint}`, !(status === 400 || status === 413));
     }
+    // minh chứng gửi thành công: status THẬT Azure trả về + các ID để đối chiếu (không có URL/SAS)
+    logInfo('azure_queue_send_succeeded', {
+      httpStatus,
+      eventId: azureMsg.eventId,
+      orderId: azureMsg.orderId,
+      messageId: azureMsg.messageId,
+      messageType: azureMsg.type,
+    });
   }
 }
 

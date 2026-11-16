@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import type { Config } from '../config';
 import type { OrderEventMessage } from './message';
@@ -34,9 +35,14 @@ export class OutboxDispatcher {
   ) {}
 
   async dispatchOnce(): Promise<DispatchResult> {
+    // Mã nhận việc của lượt này: chỉ lượt giữ đúng token mới được chốt kết quả của dòng.
+    // Nếu lease hết hạn và lượt khác đã nhận lại dòng (token mới), kết quả của lượt cũ bị bỏ qua.
+    const claimToken = randomUUID();
     const claimed = await this.db.query(
       `UPDATE outbox_events o
-          SET locked_until = now() + interval '60 seconds', attempts = o.attempts + 1
+          SET locked_until = now() + ($2::int * interval '1 millisecond'),
+              claim_token = $3::uuid,
+              attempts = o.attempts + 1
         WHERE o.id IN (
               SELECT c.id FROM outbox_events c
                WHERE c.status = 'PENDING'
@@ -48,7 +54,7 @@ export class OutboxDispatcher {
                LIMIT $1
                FOR UPDATE SKIP LOCKED)
         RETURNING o.id, o.seq, o.payload, o.attempts`,
-      [this.cfg.batchSize],
+      [this.cfg.batchSize, this.cfg.leaseMs, claimToken],
     );
     const rows = claimed.rows.sort((a, b) => a.seq - b.seq);
     let sent = 0;
@@ -56,27 +62,36 @@ export class OutboxDispatcher {
     for (const row of rows) {
       try {
         await this.publisher.publish(row.payload as OrderEventMessage);
-        await this.db.query(
-          `UPDATE outbox_events SET status = 'SENT', sent_at = now(), sent_via = $2, locked_until = NULL, last_error = NULL WHERE id = $1`,
-          [row.id, this.publisher.name],
+        const done = await this.db.query(
+          `UPDATE outbox_events
+              SET status = 'SENT', sent_at = now(), sent_via = $2, locked_until = NULL, claim_token = NULL, last_error = NULL
+            WHERE id = $1 AND claim_token = $3::uuid`,
+          [row.id, this.publisher.name, claimToken],
         );
+        if (done.rowCount !== 1) this.warnLeaseLost(row.id);
         sent++;
       } catch (err) {
         failed++;
         const retryable = !(err instanceof PublishError) || err.retryable;
         const giveUp = !retryable || row.attempts >= this.cfg.maxAttempts;
         const message = String((err as Error)?.message ?? err).slice(0, 1000);
-        await this.db.query(
+        const done = await this.db.query(
           `UPDATE outbox_events
-              SET status = $2, last_error = $3, locked_until = NULL,
+              SET status = $2, last_error = $3, locked_until = NULL, claim_token = NULL,
                   next_attempt_at = now() + ($4::int * interval '1 millisecond')
-            WHERE id = $1`,
-          [row.id, giveUp ? 'FAILED' : 'PENDING', message, backoffMs(row.attempts)],
+            WHERE id = $1 AND claim_token = $5::uuid`,
+          [row.id, giveUp ? 'FAILED' : 'PENDING', message, backoffMs(row.attempts), claimToken],
         );
+        if (done.rowCount !== 1) this.warnLeaseLost(row.id);
         console.warn(`[outbox] gửi ${row.id} thất bại (lần ${row.attempts})${giveUp ? ' -> FAILED' : ''}: ${message}`);
       }
     }
     return { claimed: rows.length, sent, failed };
+  }
+
+  /** Lượt này không còn giữ dòng (lease hết hạn, lượt khác đã nhận lại) => không ghi đè kết quả */
+  private warnLeaseLost(id: string): void {
+    console.warn(`[outbox] ${id}: lease đã hết hạn và dòng được lượt khác nhận lại, bỏ qua kết quả của lượt này`);
   }
 
   start(): void {
@@ -145,11 +160,18 @@ export class OutboxAdmin {
     }));
   }
 
-  /** Đưa sự kiện FAILED (hoặc PENDING đang chờ backoff) về hàng đợi để gửi ngay. */
+  /**
+   * Đưa sự kiện FAILED (hoặc PENDING đang chờ backoff) về hàng đợi để gửi ngay.
+   * Bỏ qua dòng worker đang gửi (lease còn hạn): xóa lease của dòng đó sẽ cho lượt khác
+   * nhận lại và gửi trùng. Dòng SENT không bao giờ được gửi lại.
+   */
   async requeue(ids?: string[]): Promise<number> {
     const r = await this.db.query(
-      `UPDATE outbox_events SET status = 'PENDING', attempts = 0, next_attempt_at = now(), locked_until = NULL
-        WHERE status IN ('FAILED', 'PENDING') ${ids ? 'AND id = ANY($1::uuid[])' : ''}`,
+      `UPDATE outbox_events
+          SET status = 'PENDING', attempts = 0, next_attempt_at = now(), locked_until = NULL, claim_token = NULL
+        WHERE status IN ('FAILED', 'PENDING')
+          AND (locked_until IS NULL OR locked_until < now())
+          ${ids ? 'AND id = ANY($1::uuid[])' : ''}`,
       ids ? [ids] : [],
     );
     return r.rowCount ?? 0;

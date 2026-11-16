@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PublishError } from '../src/outbox/publisher';
 import { backoffMs } from '../src/outbox/worker';
 import { ADMIN, ALICE, book, createEvent, setupTestApp } from './helpers';
 
@@ -147,5 +148,80 @@ describe('Outbox: lưu & gửi sự kiện đặt/hủy sang Azure', () => {
     await ctx.services.dispatcher.dispatchOnce();
     const [row] = await outboxRows();
     expect(ctx.publisher.sent.map((m) => m.messageId)).toEqual([row.id]);
+  });
+});
+
+describe('Outbox: lease và mã nhận việc (claim_token)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** Chặn lần publish đầu tiên cho tới khi gọi open() */
+  const blockFirstPublish = (thenFail = false) => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    const state = { calls: 0 };
+    const orig = ctx.publisher.publish.bind(ctx.publisher);
+    vi.spyOn(ctx.publisher, 'publish').mockImplementation(async (m) => {
+      state.calls++;
+      if (state.calls === 1) {
+        await gate;
+        if (thenFail) throw new PublishError('Azure chậm (giả lập)', true);
+      }
+      return orig(m);
+    });
+    return { open, state };
+  };
+  const waitUntil = async (cond: () => boolean) => {
+    for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(cond()).toBe(true);
+  };
+
+  it('bấm "Gửi lại" trong lúc worker đang gửi: không đụng dòng đang gửi, không gửi trùng', async () => {
+    const ev = await createEvent(ctx);
+    await book(ctx, ALICE, ev.ticketTypes[0].id, 1);
+    const block = blockFirstPublish();
+    const running = ctx.services.dispatcher.dispatchOnce();
+    await waitUntil(() => block.state.calls === 1);
+
+    const [row] = await outboxRows();
+    expect(row.claim_token).toBeTruthy();
+    expect(new Date(row.locked_until).getTime() - Date.now()).toBeGreaterThan(50_000); // leaseMs = 60s
+
+    const retry = await ctx.api().post('/api/admin/outbox/retry').set('Authorization', ADMIN).send({ ids: [row.id] });
+    expect(retry.status).toBe(200);
+    expect(retry.body).toMatchObject({ requeued: 0, claimed: 0 });
+    expect(await ctx.services.outboxAdmin.requeue()).toBe(0); // gửi lại "tất cả" cũng bỏ qua dòng đang gửi
+
+    block.open();
+    expect(await running).toEqual({ claimed: 1, sent: 1, failed: 0 });
+    expect(block.state.calls).toBe(1);
+    expect(ctx.publisher.sent).toHaveLength(1);
+    expect((await outboxRows())[0]).toMatchObject({ status: 'SENT', attempts: 1, claim_token: null, locked_until: null });
+  });
+
+  it('lease hết hạn, lượt khác đã gửi xong: kết quả lỗi đến muộn của lượt cũ không ghi đè SENT', async () => {
+    const ev = await createEvent(ctx);
+    await book(ctx, ALICE, ev.ticketTypes[0].id, 1);
+    const block = blockFirstPublish(true);
+    const slow = ctx.services.dispatcher.dispatchOnce();
+    await waitUntil(() => block.state.calls === 1);
+
+    await ctx.db.query(`UPDATE outbox_events SET locked_until = now() - interval '1 second'`); // giả lập lease hết hạn
+    expect(await ctx.services.dispatcher.dispatchOnce()).toEqual({ claimed: 1, sent: 1, failed: 0 });
+
+    block.open();
+    expect(await slow).toEqual({ claimed: 1, sent: 0, failed: 1 });
+    const [row] = await outboxRows();
+    expect(row).toMatchObject({ status: 'SENT', attempts: 2, last_error: null, claim_token: null });
+    expect(ctx.publisher.sent).toHaveLength(1);
+  });
+
+  it('FAILED vẫn gửi lại được qua API khi worker không giữ dòng', async () => {
+    ctx.publisher.fail = true;
+    const ev = await createEvent(ctx);
+    await book(ctx, ALICE, ev.ticketTypes[0].id, 1);
+    await ctx.db.query(`UPDATE outbox_events SET status = 'FAILED', attempts = 3`);
+    ctx.publisher.fail = false;
+    const retry = await ctx.api().post('/api/admin/outbox/retry').set('Authorization', ADMIN).send({});
+    expect(retry.body).toMatchObject({ requeued: 1, sent: 1 });
   });
 });
