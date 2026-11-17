@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { toAzureMessage, validateAzureMessage } from '../src/outbox/azureMessage';
 import type { OrderEventMessage } from '../src/outbox/message';
 import { AzureQueuePublisher, normalizeQueueUrl, PublishError, redactSecrets } from '../src/outbox/publisher';
@@ -147,6 +147,35 @@ describe('AzureQueuePublisher (server Storage Queue giả lập)', () => {
 
     const down = await new AzureQueuePublisher(`http://127.0.0.1:1/devaccount/ticket-events?${SAS}`, 1000).publish(internal()).catch((e) => e);
     expect(down.retryable).toBe(true);
+  });
+
+  it('log minh chứng: một dòng JSON với status 201 THẬT và các ID; không có SAS; lỗi thì không ghi "succeeded"', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      status = 201;
+      const pub = new AzureQueuePublisher(`${base}?${SAS}`, 2000);
+      await pub.publish(internal({}, 'ORDER_CANCELLED'));
+      expect(spy).toHaveBeenCalledTimes(1);
+      const line = String(spy.mock.calls[0][0]);
+      expect(JSON.parse(line)).toEqual({
+        severity: 'INFO',
+        event: 'azure_queue_send_succeeded',
+        httpStatus: 201,
+        eventId: 'cf02fc3f-82a0-4853-82e5-e2bbdcadba6c',
+        orderId: '99f4ad2a-605a-4663-bd28-d6add73d247e',
+        messageId: '0b7c2a8e-5f1e-4c47-9d6a-2a4f8c1e9b10',
+        messageType: 'CANCELLED',
+      });
+      expect(line).not.toMatch(/SuPeRsEcReT|sig=|sv=|127\.0\.0\.1/);
+
+      spy.mockClear();
+      status = 403;
+      await pub.publish(internal()).catch(() => undefined);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      status = 201;
+    }
   });
 
   it('chuẩn hóa URL và che SAS', () => {

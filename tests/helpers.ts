@@ -36,7 +36,7 @@ export function setupTestApp(overrides: Partial<Config['rules']> = {}, authConfi
     databaseUrl: TEST_DB_URL,
     auth: authConfig ?? config.auth,
     rules: { cancellationDeadlineHours: 24, maxTicketsPerOrder: 10, ...overrides },
-    outbox: { enabled: false, pollIntervalMs: 1000, batchSize: 50, maxAttempts: 3 },
+    outbox: { enabled: false, pollIntervalMs: 1000, batchSize: 50, maxAttempts: 3, leaseMs: 60_000 },
   };
   const { app, services } = createApp({
     db,

@@ -163,7 +163,7 @@ Body tùy chọn: `{ "reason": "…" }`. Server cập nhật trạng thái và h
 | `CANCELLATION_WINDOW_CLOSED` | 422 | Còn ít hơn `CANCELLATION_DEADLINE_HOURS` giờ trước giờ diễn |
 | `ORDER_NOT_FOUND` | 404 | Đơn không tồn tại hoặc là đơn của người khác |
 
-Quy tắc hủy: khách được hủy khi còn ≥ N giờ trước giờ diễn. Nếu sự kiện đã bị hủy thì khách được hủy đơn bất cứ lúc nào. Admin luôn được hủy.
+Quy tắc hủy: khách được hủy khi còn ≥ N giờ trước giờ diễn. Admin luôn được hủy. Khi admin hủy cả sự kiện, mọi đơn còn hiệu lực được hủy tự động (xem `PATCH /admin/events/:id`), nên khách hủy lại sẽ nhận `409 ORDER_ALREADY_CANCELLED`.
 
 ---
 
@@ -176,7 +176,7 @@ Khách gọi các API này nhận **403 FORBIDDEN**, chưa đăng nhập nhận 
 | `GET /admin/events?status=&category=&q=&includePast=` | Danh sách sự kiện mọi trạng thái |
 | `POST /admin/events` | Tạo sự kiện, có thể kèm hạng vé |
 | `GET /admin/events/:id` | Chi tiết, kể cả DRAFT |
-| `PATCH /admin/events/:id` | Sửa một phần (title, description, category, venue, startTime, endTime, status, imageUrl) |
+| `PATCH /admin/events/:id` | Sửa một phần (title, description, category, venue, startTime, endTime, status, imageUrl). Response có thêm `cancelledOrders`. Xem "Hủy cả sự kiện" bên dưới |
 | `POST /admin/events/:id/ticket-types` | Thêm hạng vé |
 | `PATCH /admin/ticket-types/:id` | Sửa hạng vé (name, description, price, totalQuantity) |
 | `GET /admin/orders?eventId=&status=&ticketTypeId=&userId=` | Tra đơn, trả kèm `summary` theo trạng thái |
@@ -184,12 +184,28 @@ Khách gọi các API này nhận **403 FORBIDDEN**, chưa đăng nhập nhận 
 | `POST /admin/orders/:id/cancel` | Hủy đơn, không bị giới hạn bởi hạn hủy |
 | `GET /admin/outbox/stats` | Số sự kiện gửi Azure theo trạng thái PENDING/SENT/FAILED |
 | `GET /admin/outbox?status=FAILED&limit=50` | Danh sách sự kiện outbox kèm lỗi gần nhất |
-| `POST /admin/outbox/retry` | Body `{ "ids": [...] }` (bỏ trống để gửi lại tất cả). Đưa về PENDING rồi gửi ngay |
+| `POST /admin/outbox/retry` | Body `{ "ids": [...] }` (bỏ trống để gửi lại tất cả). Đưa FAILED/PENDING về hàng đợi rồi gửi ngay. Bỏ qua dòng worker đang gửi dở; SENT không bao giờ gửi lại |
 | `POST /admin/outbox/dispatch` | Chạy worker một lượt ngay lập tức |
 | `GET /admin/stats/daily?from=&to=&eventId=` | Thống kê theo từng ngày, giờ VN. Đủ mọi ngày trong khoảng, mặc định 30 ngày gần nhất, tối đa 366 ngày |
 | `GET /admin/stats/events?from=&to=` | Thống kê theo sự kiện, kèm `eventTitle` |
 | `GET /admin/stats/events/:id?from=&to=` | Thống kê của một sự kiện, nằm ở trường `item` |
 | `GET /admin/orders/:id/azure-sync` | Đối soát: Azure đã xử lý từng thông điệp của đơn chưa (`processedByAzure`) |
+
+### Hủy cả sự kiện: `PATCH /admin/events/:id` với `status = CANCELLED`
+
+```json
+{ "status": "CANCELLED", "cancelReason": "Ca sĩ ốm" }
+```
+
+`cancelReason` không bắt buộc (mặc định "Sự kiện bị hủy") và chỉ dùng được cùng `status = CANCELLED`, nếu không sẽ nhận 400.
+Trong **một giao dịch**, server:
+1. Đổi trạng thái sự kiện thành `CANCELLED`. Từ lúc này đặt vé nhận `409 EVENT_CANCELLED`, và không mở lại sự kiện được.
+2. Hủy mọi đơn `CONFIRMED` của sự kiện, với `cancelledBy` là admin và `cancelReason` như trên.
+3. Hoàn vé về từng hạng vé.
+4. Ghi một thông điệp `CANCELLED` sang Azure cho từng đơn, giống như khi hủy từng đơn.
+
+Response là chi tiết sự kiện kèm `"cancelledOrders": <số đơn vừa hủy>`. Gọi lại với sự kiện đã `CANCELLED` trả `cancelledOrders: 0` và không sinh thêm bản ghi nào.
+Đơn khách tự hủy cùng lúc chỉ được tính một lần, vé không bị hoàn hai lần.
 
 **Tạo sự kiện**
 ```json

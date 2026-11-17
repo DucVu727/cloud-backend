@@ -20,6 +20,9 @@ export type AuthMode = 'local' | 'mock' | 'jwt' | 'http';
 export type PublisherMode = 'mock' | 'azure-queue';
 export type StatsMode = 'mock' | 'http';
 
+const outboxBatchSize = int('OUTBOX_BATCH_SIZE', 20);
+const azureTimeoutMs = int('AZURE_TIMEOUT_MS', 5000);
+
 export const config = {
   port: int('PORT', 3000),
   nodeEnv: str('NODE_ENV', 'development'),
@@ -50,14 +53,19 @@ export const config = {
     mockFail: bool('PUBLISHER_MOCK_FAIL', false),
     /** URL queue kèm SAS token (chỉ quyền ghi). BÍ MẬT - để trong .env / Secret Manager */
     queueSasUrl: str('AZURE_QUEUE_SAS_URL'),
-    timeoutMs: int('AZURE_TIMEOUT_MS', 5000),
+    timeoutMs: azureTimeoutMs,
   },
 
   outbox: {
     enabled: bool('OUTBOX_ENABLED', true),
     pollIntervalMs: int('OUTBOX_POLL_INTERVAL_MS', 5000),
-    batchSize: int('OUTBOX_BATCH_SIZE', 20),
+    batchSize: outboxBatchSize,
     maxAttempts: int('OUTBOX_MAX_ATTEMPTS', 10),
+    /**
+     * Thời gian một lượt worker được giữ lô đã nhận. Lô được gửi tuần tự nên lease phải đủ cho
+     * cả lô: mặc định = số thông điệp × timeout gửi + 30 giây, tối thiểu 60 giây.
+     */
+    leaseMs: int('OUTBOX_LEASE_MS', Math.max(60_000, outboxBatchSize * azureTimeoutMs + 30_000)),
   },
 
   stats: {

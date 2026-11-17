@@ -1,7 +1,8 @@
 -- =====================================================================
 -- 001_init: sự kiện, hạng vé, đơn đặt, outbox gửi sang Azure
 -- =====================================================================
-CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
+-- gen_random_uuid() có sẵn từ PostgreSQL 13, không cần extension pgcrypto
+-- (user ứng dụng trên Cloud SQL không có quyền CREATE EXTENSION).
 
 -- ---------- Sự kiện ----------
 CREATE TABLE events (
