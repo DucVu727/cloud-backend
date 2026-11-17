@@ -4,7 +4,7 @@ import type { Pool } from 'pg';
 import request from 'supertest';
 import { afterAll, beforeEach } from 'vitest';
 import { createApp } from '../src/app';
-import { MockAuthProvider } from '../src/auth/providers';
+import { createAuthProvider, MockAuthProvider } from '../src/auth/providers';
 import { config, type Config } from '../src/config';
 import { createPool } from '../src/db';
 import { MockPublisher } from '../src/outbox/publisher';
@@ -28,19 +28,20 @@ export interface TestCtx {
 }
 
 /** Dựng app trên một cổng ngẫu nhiên, DB test, publisher giả. Dọn DB trước mỗi test. */
-export function setupTestApp(overrides: Partial<Config['rules']> = {}): TestCtx {
+export function setupTestApp(overrides: Partial<Config['rules']> = {}, authConfig?: Config['auth']): TestCtx {
   const db = createPool(TEST_DB_URL);
   const publisher = new MockPublisher(false);
   const testConfig: Config = {
     ...config,
     databaseUrl: TEST_DB_URL,
+    auth: authConfig ?? config.auth,
     rules: { cancellationDeadlineHours: 24, maxTicketsPerOrder: 10, ...overrides },
     outbox: { enabled: false, pollIntervalMs: 1000, batchSize: 50, maxAttempts: 3 },
   };
   const { app, services } = createApp({
     db,
     config: testConfig,
-    auth: new MockAuthProvider(),
+    auth: authConfig ? createAuthProvider(authConfig, db) : new MockAuthProvider(),
     publisher,
     stats: new StatsService(new LocalStatsSource(db), db, 0),
   });
@@ -78,13 +79,14 @@ export async function createEvent(
     startInHours?: number;
     ticketTypes?: { name: string; price: number; totalQuantity: number }[];
     title?: string;
+    auth?: string;
   } = {},
 ) {
   const start = Date.now() + (opts.startInHours ?? 24 * 7) * HOUR;
   const res = await ctx
     .api()
     .post('/api/admin/events')
-    .set('Authorization', ADMIN)
+    .set('Authorization', opts.auth ?? ADMIN)
     .send({
       title: opts.title ?? 'Sự kiện thử',
       category: opts.category ?? 'concert',

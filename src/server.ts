@@ -7,7 +7,7 @@ import { createStatsService } from './stats/client';
 
 async function main() {
   const db = createPool();
-  const auth = createAuthProvider(config.auth);
+  const auth = createAuthProvider(config.auth, db);
   const publisher = createPublisher(config.publisher);
   const stats = createStatsService(config.stats, db);
   const { app, services } = createApp({ db, config, auth, publisher, stats });

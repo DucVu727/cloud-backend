@@ -2,6 +2,7 @@ import express, { type Express } from 'express';
 import { resolve } from 'node:path';
 import type { Pool } from 'pg';
 import { authenticate } from './auth/middleware';
+import { buildLoginRoutes } from './auth/routes';
 import type { AuthProvider } from './auth/types';
 import type { Config } from './config';
 import { errorHandler, notFoundHandler } from './errors';
@@ -67,7 +68,12 @@ export function createApp(deps: AppDeps): { app: Express; services: Services } {
       health: '/health',
       auth: `${deps.auth.name}${deps.auth.name === 'mock' ? ' (header Authorization: Bearer mock:<userId>:<customer|admin>)' : ''}`,
       endpoints: {
-        public: ['GET /api/events?category=', 'GET /api/events/categories', 'GET /api/events/:eventId'],
+        public: [
+          ...(deps.auth.login ? ['POST /api/auth/login'] : []),
+          'GET /api/events?category=',
+          'GET /api/events/categories',
+          'GET /api/events/:eventId',
+        ],
         customer: ['POST /api/orders', 'GET /api/orders', 'GET /api/orders/:orderId', 'POST /api/orders/:orderId/cancel', 'GET /api/me'],
         admin: [
           'GET|POST /api/admin/events',
@@ -92,6 +98,7 @@ export function createApp(deps: AppDeps): { app: Express; services: Services } {
     }
   });
 
+  app.use('/api/auth', buildLoginRoutes(deps.auth));
   app.use('/api', authenticate(deps.auth), buildRoutes(services));
   app.use(notFoundHandler);
   app.use(errorHandler);

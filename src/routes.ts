@@ -75,6 +75,7 @@ export function buildRoutes(s: Services): Router {
 
   // ======================= KHÁCH (đã đăng nhập) =======================
   r.get('/me', requireAuth, (req, res) => {
+    res.set('Cache-Control', 'no-store');
     res.json(currentUser(req));
   });
 
