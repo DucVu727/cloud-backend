@@ -1,6 +1,6 @@
 # Backend quản lý sự kiện & đặt vé (GCP)
 
-> Bản chạy trên GCP dùng JWT, `DB_POOL_MAX=5`, `STATS_TIMEOUT_MS=60000`, `CORS_ORIGIN` nhiều origin cách nhau bằng dấu phẩy và `OUTBOX_BATCH_SIZE=1` (xem mục 4.1). Để bật đăng nhập trong backend chung, dùng `AUTH_MODE=local`. Bộ test có 73 test. Script triển khai riêng của project GCP do Dương quản lý.
+> Bản chạy trên GCP dùng JWT, `DB_POOL_MAX=5`, `STATS_TIMEOUT_MS=60000`, `CORS_ORIGIN` nhiều origin cách nhau bằng dấu phẩy và `OUTBOX_BATCH_SIZE=1` (xem mục 4.1). Để bật đăng nhập trong backend chung, dùng `AUTH_MODE=local`. Bộ test có 74 test. Script triển khai riêng của project GCP do Dương quản lý.
 
 Dịch vụ sở hữu **dữ liệu đơn chính thức** của hệ thống: sự kiện, hạng vé, đơn đặt vé.
 Mọi thay đổi đơn (đặt / hủy) được ghi kèm một sự kiện vào **outbox** trong cùng giao dịch,
@@ -301,5 +301,5 @@ src/
   lib/log.ts                Log JSON một dòng cho Cloud Logging
   routes.ts                 Khai báo toàn bộ route
   scripts/                  migrate, seed, seed-accounts, make-token (JWT test), azure-smoke, azure-sent-report
-tests/                      73 test tích hợp chạy trên Postgres thật
+tests/                      74 test tích hợp chạy trên Postgres thật
 ```

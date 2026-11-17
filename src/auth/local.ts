@@ -3,8 +3,8 @@ import type { Queryable } from '../db';
 import { verifyPassword } from './passwords';
 import type { AuthProvider, AuthUser, LoginResult } from './types';
 
-const TOKEN_ISSUER = 'event-ticketing-backend';
-const TOKEN_AUDIENCE = 'event-ticketing-api';
+export const TOKEN_ISSUER = 'event-ticketing-backend';
+export const TOKEN_AUDIENCE = 'event-ticketing-api';
 
 type AccountRow = { user_id: string; role: AuthUser['role'] };
 

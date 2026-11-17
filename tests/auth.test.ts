@@ -2,6 +2,8 @@ import jwt from 'jsonwebtoken';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { seedDemoAccounts } from '../src/auth/demo-accounts';
 import { hashPassword } from '../src/auth/passwords';
+import { JwtAuthProvider } from '../src/auth/providers';
+import { signTestToken } from '../src/auth/test-token';
 import { config } from '../src/config';
 import { createEvent, setupTestApp } from './helpers';
 
@@ -88,6 +90,24 @@ describe('Backend tài khoản và phân quyền', () => {
     const path = `/api/admin/ticket-types/${event.ticketTypes[0].id}`;
     await ctx.api().patch(path).set('Authorization', customer).send({ price: 150000 }).expect(403);
     await ctx.api().patch(path).set('Authorization', admin).send({ price: 150000 }).expect(200);
+  });
+
+  it('nhận token của script npm run token ở chế độ local và jwt, vai trò vẫn lấy từ DB', async () => {
+    const forAdmin = signTestToken({ sub: 'admin1', role: 'admin', ttlMinutes: 5 }, SECRET);
+    const me = await ctx.api().get('/api/me').set('Authorization', `Bearer ${forAdmin}`).expect(200);
+    expect(me.body).toEqual({ userId: 'admin1', role: 'admin' });
+
+    // Tự xưng admin cho tài khoản khách không có tác dụng: vai trò đọc từ bảng accounts.
+    const forged = signTestToken({ sub: 'alice', role: 'admin', ttlMinutes: 5 }, SECRET);
+    await ctx.api().get('/api/admin/events').set('Authorization', `Bearer ${forged}`).expect(403);
+
+    // Không có trong bảng accounts thì bị từ chối.
+    const unknown = signTestToken({ sub: 'ghost', role: 'admin', ttlMinutes: 5 }, SECRET);
+    await ctx.api().get('/api/me').set('Authorization', `Bearer ${unknown}`).expect(401);
+
+    // Chế độ jwt (không kiểm tra iss/aud) vẫn đọc được token này.
+    const jwtUser = await new JwtAuthProvider(SECRET, ['HS256']).verify(forAdmin);
+    expect(jwtUser).toMatchObject({ userId: 'admin1', role: 'admin' });
   });
 
   it('đọc lại vai trò hiện tại và từ chối phiên của tài khoản đã bị xóa', async () => {
