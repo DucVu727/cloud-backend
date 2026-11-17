@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 import { withTransaction, type Queryable } from '../db';
 import { Errors } from '../errors';
 import { pageMeta } from '../lib/validation';
+import { enqueueOrderEvent, type OrderSnapshot } from '../outbox/message';
 import type { EventCreateInput, EventListQuery, EventUpdateInput, TicketTypeInput, TicketTypeUpdateInput } from './schemas';
 
 // ---------------- DTO ----------------
@@ -155,7 +156,16 @@ export class EventService {
     });
   }
 
-  async update(id: string, patch: EventUpdateInput) {
+  /**
+   * Sửa sự kiện. Khi chuyển sang CANCELLED (lần đầu), trong CÙNG giao dịch:
+   * hủy mọi đơn CONFIRMED của sự kiện, hoàn vé, và ghi một ORDER_CANCELLED vào outbox cho từng đơn.
+   *
+   * Đồng thời: dòng sự kiện bị khóa FOR UPDATE, còn đặt vé khóa FOR SHARE cùng dòng này,
+   * nên không đơn mới nào lọt vào sau khi sự kiện bị hủy. Khách hủy đơn song song khóa dòng đơn;
+   * câu UPDATE ở đây chờ rồi bỏ qua đơn đã hủy, nên vé chỉ được hoàn một lần.
+   * Hủy lại sự kiện đã CANCELLED không sinh thêm bản ghi nào (cancelledOrders = 0).
+   */
+  async update(id: string, patch: EventUpdateInput, actorId: string) {
     return withTransaction(this.db, async (tx) => {
       const cur = await tx.query('SELECT * FROM events WHERE id = $1 FOR UPDATE', [id]);
       const row = cur.rows[0];
@@ -186,8 +196,13 @@ export class EventService {
         sets.push(`${col} = $${params.length}`);
       }
       params.push(id);
-      await tx.query(`UPDATE events SET ${sets.join(', ')}, updated_at = now() WHERE id = $${params.length}`, params);
-      return this.getById(id, false, tx);
+      await tx.query(`UPDATE events SET ${[...sets, 'updated_at = now()'].join(', ')} WHERE id = $${params.length}`, params);
+
+      let cancelledOrders = 0;
+      if (patch.status === 'CANCELLED' && row.status !== 'CANCELLED') {
+        cancelledOrders = await cancelAllOrdersOfEvent(tx, id, actorId, patch.cancelReason ?? 'Sự kiện bị hủy');
+      }
+      return { ...(await this.getById(id, false, tx)), cancelledOrders };
     });
   }
 
@@ -261,6 +276,36 @@ export class EventService {
       return toTicketTypeDto(out.rows[0]);
     });
   }
+}
+
+/**
+ * Hủy mọi đơn CONFIRMED của sự kiện, hoàn vé theo từng hạng, ghi ORDER_CANCELLED cho từng đơn.
+ * PHẢI gọi trong giao dịch đang khóa dòng sự kiện. Trả về số đơn đã hủy.
+ */
+async function cancelAllOrdersOfEvent(tx: Queryable, eventId: string, actorId: string, reason: string): Promise<number> {
+  const r = await tx.query(
+    `WITH c AS (
+       UPDATE orders
+          SET status = 'CANCELLED', cancelled_at = now(), cancelled_by = $2, cancel_reason = $3, updated_at = now()
+        WHERE event_id = $1 AND status = 'CONFIRMED'
+        RETURNING *
+     ), returned AS (
+       UPDATE ticket_types t
+          SET available_quantity = t.available_quantity + s.qty, updated_at = now()
+         FROM (SELECT ticket_type_id, sum(quantity)::int AS qty FROM c GROUP BY ticket_type_id) s
+        WHERE t.id = s.ticket_type_id
+        RETURNING t.id
+     )
+     SELECT c.*, e.title AS event_title, e.category AS event_category,
+            e.start_time AS event_start_time, t.name AS ticket_type_name
+       FROM c
+       JOIN events e       ON e.id = c.event_id
+       JOIN ticket_types t ON t.id = c.ticket_type_id
+      ORDER BY c.created_at, c.id`,
+    [eventId, actorId, reason],
+  );
+  for (const o of r.rows) await enqueueOrderEvent(tx, 'ORDER_CANCELLED', o as OrderSnapshot);
+  return r.rows.length;
 }
 
 async function insertTicketType(db: Queryable, eventId: string, tt: TicketTypeInput) {

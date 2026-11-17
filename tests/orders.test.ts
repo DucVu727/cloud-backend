@@ -116,11 +116,16 @@ describe('Hủy đơn', () => {
     expect(await available(ctx, ev.ticketTypes[0].id)).toBe(10);
   });
 
-  it('sự kiện bị hủy => khách được hủy đơn dù đã quá hạn', async () => {
+  it('sự kiện bị hủy => đơn đã quá hạn hủy cũng được hủy tự động; khách hủy lại => 409, không hoàn vé lần 2', async () => {
     const ev = await createEvent(ctx, { startInHours: 10 });
     const o = await book(ctx, ALICE, ev.ticketTypes[0].id, 1);
     await ctx.api().patch(`/api/admin/events/${ev.id}`).set('Authorization', ADMIN).send({ status: 'CANCELLED' });
-    expect((await ctx.api().post(`/api/orders/${o.body.id}/cancel`).set('Authorization', ALICE)).status).toBe(200);
+    const mine = await ctx.api().get(`/api/orders/${o.body.id}`).set('Authorization', ALICE);
+    expect(mine.body).toMatchObject({ status: 'CANCELLED', cancelledBy: 'admin1', cancelReason: 'Sự kiện bị hủy', canCancel: false });
+    const again = await ctx.api().post(`/api/orders/${o.body.id}/cancel`).set('Authorization', ALICE);
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe('ORDER_ALREADY_CANCELLED');
+    expect(await available(ctx, ev.ticketTypes[0].id)).toBe(10);
   });
 
   it('hủy và đặt chạy song song vẫn giữ đúng bất biến số vé', async () => {

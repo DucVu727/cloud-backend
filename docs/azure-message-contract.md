@@ -45,7 +45,7 @@ Chỉ gửi đúng 7 trường. Azure xác nhận trường thêm bị bỏ qua,
 Không gửi `userId` và giá sang Azure vì Azure không cần các trường này.
 
 ### Trả lời 5 câu hỏi của người làm Azure
-1. **Có tạo thông điệp riêng cho hủy không?** Có. Mỗi lần hủy là một thông điệp `CANCELLED` riêng, được ghi cùng giao dịch với lúc cập nhật đơn. Hủy lần thứ hai bị từ chối (409) nên không sinh thêm thông điệp.
+1. **Có tạo thông điệp riêng cho hủy không?** Có. Mỗi lần hủy là một thông điệp `CANCELLED` riêng, được ghi cùng giao dịch với lúc cập nhật đơn. Hủy lần thứ hai bị từ chối (409) nên không sinh thêm thông điệp. Khi admin **hủy cả sự kiện**, mỗi đơn còn hiệu lực của sự kiện nhận một `CANCELLED` riêng, cùng mẫu 7 trường, ghi trong cùng giao dịch hủy sự kiện. Không có loại thông điệp "hủy sự kiện" riêng.
 2. **Có hủy một phần không?** Không. Mỗi lần hủy là hủy cả đơn, nên `quantity` của `CANCELLED` bằng `quantity` của `BOOKED`.
 3. **Có loại sự kiện nào khác không?** Không. Chỉ có `BOOKED` và `CANCELLED`, chưa có hoàn tiền hay hết hạn giữ chỗ.
 4. **`messageId` lấy từ đâu?** Là id của dòng outbox, cố định qua mọi lần gửi lại.
@@ -59,10 +59,12 @@ Không gửi `userId` và giá sang Azure vì Azure không cần các trường 
 |---|---|
 | Không mất thông điệp | Thông điệp được ghi vào `outbox_events` **trong cùng giao dịch** với thay đổi đơn. Worker gửi lại khi lỗi, với khoảng chờ tăng dần 5s, 10s, 20s, …, tối đa 15 phút |
 | Không đếm trùng | `messageId` cố định, Azure khử trùng theo cặp `(eventId, messageId)` |
+| Không gửi trùng phía GCP | Worker nhận lô bằng `FOR UPDATE SKIP LOCKED`, lease đủ dài cho cả lô và mã nhận việc `claim_token`: chỉ lượt đang giữ dòng mới được chốt SENT/FAILED. Nút "Gửi lại" bỏ qua dòng đang gửi dở. Gửi qua mạng vẫn là at-least-once (ví dụ mất kết nối sau khi Azure đã nhận), nên Azure vẫn phải khử trùng |
 | Đúng thứ tự trong từng đơn | `CANCELLED` của một đơn chỉ được gửi sau khi `BOOKED` của đơn đó đã gửi thành công |
 | Không gửi thông điệp sai mẫu | Xem mục 3 |
 | SAS hết hạn hoặc sai | Queue trả 401/403. Thông điệp ở lại PENDING và được thử lại; quá `OUTBOX_MAX_ATTEMPTS` thì chuyển FAILED. Sau khi thay SAS mới, admin bấm "Gửi lại" (`POST /api/admin/outbox/retry`) |
 | Không lộ SAS | Phần `sig=` bị che (`***`) trong mọi log và lỗi |
+| Minh chứng gửi thành công | Mỗi lần queue trả thành công, ghi một dòng JSON `azure_queue_send_succeeded` kèm `httpStatus` thật (201), `eventId`, `orderId`, `messageId`, `messageType`. Gọi `/stats` hoặc `/history` thành công ghi `azure_stats_request_succeeded` (200). Xem README mục 4.5 |
 
 ## 3. Kiểm tra thông điệp TRƯỚC KHI gửi
 
