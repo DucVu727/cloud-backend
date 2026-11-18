@@ -2,16 +2,16 @@ import type { RequestHandler } from 'express';
 import { Errors } from '../errors';
 import type { AuthProvider, AuthUser } from './types';
 
-/** Đọc Bearer token (nếu có) và gắn req.user. Không chặn request. */
+/** Gắn req.user từ Bearer token hợp lệ. Route tự quyết định có yêu cầu đăng nhập hay không. */
 export function authenticate(provider: AuthProvider): RequestHandler {
   return async (req, _res, next) => {
     const header = req.headers.authorization;
     if (!header) return next();
     const m = /^Bearer\s+(.+)$/i.exec(header);
-    if (!m) return next(Errors.unauthorized('Header Authorization phải dạng "Bearer <token>"'));
+    if (!m) return next(Errors.unauthorized());
     try {
       const user = await provider.verify(m[1].trim());
-      if (!user) return next(Errors.unauthorized('Token không hợp lệ hoặc đã hết hạn'));
+      if (!user) return next(Errors.unauthorized());
       req.user = user;
       next();
     } catch (err) {

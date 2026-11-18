@@ -2,7 +2,7 @@
 
 Base URL: `http://localhost:3000/api`. Mọi request và response đều là JSON.
 
-**Xác thực**: header `Authorization: Bearer <token>`. Khi `AUTH_MODE=mock`, token có dạng `mock:<userId>:<customer|admin>`.
+**Xác thực** dùng header `Authorization: Bearer <token>`. Lấy token từ `POST /auth/login` khi backend chạy `AUTH_MODE=local`. Khi chạy `AUTH_MODE=mock`, token thử có dạng `mock:<userId>:<customer|admin>`.
 
 **Lỗi** luôn có dạng:
 
@@ -12,6 +12,67 @@ Base URL: `http://localhost:3000/api`. Mọi request và response đều là JSO
 
 **Phân trang**: query `page` (mặc định 1) và `limit` (mặc định 20, tối đa 100). Response trả kèm
 `pagination: { page, limit, total, totalPages }`.
+
+---
+
+## 0. Đăng nhập và phiên dùng chung cho hai frontend
+
+### `POST /auth/login`
+
+Gửi `Content-Type: application/json`. Ví dụ dùng tài khoản mẫu chạy local.
+
+```json
+{ "username": "alice", "password": "DemoCustomer2026!" }
+```
+
+Tên đăng nhập phân biệt hoa thường, có từ 1 đến 100 ký tự thuộc nhóm chữ cái ASCII, chữ số, dấu gạch, chấm, gạch dưới hoặc `@`. Backend bỏ khoảng trắng ở hai đầu tên đăng nhập và giữ nguyên mật khẩu. Mật khẩu có từ 1 đến 256 ký tự.
+
+**200 OK**
+
+```json
+{ "token": "<JWT>", "expiresIn": 3600, "userId": "alice", "role": "customer" }
+```
+
+`expiresIn` là số giây token có hiệu lực kể từ lúc cấp. Tài khoản quản trị nhận cùng cấu trúc với `"role": "admin"`.
+
+**400** khi thiếu trường hoặc trường sai kiểu/định dạng.
+
+```json
+{ "error": { "code": "VALIDATION_ERROR", "message": "Vui lòng nhập tài khoản và mật khẩu hợp lệ" } }
+```
+
+**401** khi tài khoản hoặc mật khẩu sai. Hai trường hợp có cùng phản hồi.
+
+```json
+{ "error": { "code": "INVALID_CREDENTIALS", "message": "Tài khoản hoặc mật khẩu không đúng" } }
+```
+
+### `GET /me`
+
+Gửi `Authorization: Bearer <JWT>`. **200 OK** trả mã người dùng và vai trò đang có hiệu lực.
+
+```json
+{ "userId": "alice", "role": "customer" }
+```
+
+**401** khi thiếu token, sai header, token sai hoặc token hết hạn.
+
+```json
+{ "error": { "code": "UNAUTHORIZED", "message": "Chưa đăng nhập hoặc phiên không hợp lệ" } }
+```
+
+**403** khi dùng phiên khách hàng để gọi API quản trị.
+
+```json
+{ "error": { "code": "FORBIDDEN", "message": "Chỉ quản trị viên mới được thực hiện thao tác này" } }
+```
+
+### Xử lý trên frontend
+
+1. Dùng cùng form đăng nhập. Điều hướng theo `role` sau khi nhận 200. `customer` vào danh sách sự kiện, `admin` vào trang quản trị. Với 400 hoặc 401 từ API đăng nhập, giữ form và hiển thị `error.message`.
+2. Lưu token trong trạng thái phiên, có thể dùng `sessionStorage` để giữ phiên khi tải lại trong cùng tab. Gửi token qua header Bearer cho `/me`, `/orders` và `/admin/*`. Khi mở lại ứng dụng, gọi `/me` để cập nhật vai trò. Hai giao diện muốn dùng cùng phiên trong một tab cần chạy cùng origin.
+3. Khi API được bảo vệ trả 401, xóa token và chuyển về trang đăng nhập. Khi nhận 403, giữ phiên và hiển thị lỗi quyền. Khi người dùng chọn đăng xuất, xóa token trong trạng thái phiên.
+4. Khi xem hoặc hủy đơn nhận 404 `ORDER_NOT_FOUND`, hiển thị “Không tìm thấy đơn đặt vé”. Backend dùng `userId` lấy từ phiên cho toàn bộ API đặt, xem và hủy đơn của khách.
 
 ---
 
@@ -103,9 +164,6 @@ Body tùy chọn: `{ "reason": "…" }`. Server cập nhật trạng thái và h
 | `ORDER_NOT_FOUND` | 404 | Đơn không tồn tại hoặc là đơn của người khác |
 
 Quy tắc hủy: khách được hủy khi còn ≥ N giờ trước giờ diễn. Admin luôn được hủy. Khi admin hủy cả sự kiện, mọi đơn còn hiệu lực được hủy tự động (xem `PATCH /admin/events/:id`), nên khách hủy lại sẽ nhận `409 ORDER_ALREADY_CANCELLED`.
-
-### `GET /me`
-Trả thông tin người đang đăng nhập `{ userId, role }`, dùng để kiểm tra token.
 
 ---
 
@@ -208,6 +266,7 @@ Quy tắc kiểm tra dữ liệu:
 |---|---|
 | `VALIDATION_ERROR` | 400. `details` là mảng `{ path, message }` |
 | `INVALID_JSON` | 400 |
+| `INVALID_CREDENTIALS` | 401 |
 | `UNAUTHORIZED` | 401 |
 | `FORBIDDEN` | 403 |
 | `AUTH_SERVICE_UNAVAILABLE` | 503 |

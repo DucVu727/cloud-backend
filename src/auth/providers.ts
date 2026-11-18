@@ -1,6 +1,8 @@
 import jwt from 'jsonwebtoken';
 import type { Config } from '../config';
+import type { Queryable } from '../db';
 import { AppError } from '../errors';
+import { LocalAuthProvider } from './local';
 import type { AuthProvider, AuthUser, Role } from './types';
 
 function normalizeRole(raw: unknown): Role {
@@ -75,8 +77,11 @@ export class HttpAuthProvider implements AuthProvider {
   }
 }
 
-export function createAuthProvider(cfg: Config['auth']): AuthProvider {
+export function createAuthProvider(cfg: Config['auth'], db?: Queryable): AuthProvider {
   switch (cfg.mode) {
+    case 'local':
+      if (!db) throw new Error('AUTH_MODE=local cần kết nối PostgreSQL');
+      return new LocalAuthProvider(db, cfg.jwtSecret, cfg.tokenTtlSeconds);
     case 'jwt':
       return cfg.jwtPublicKey
         ? new JwtAuthProvider(cfg.jwtPublicKey, ['RS256'])

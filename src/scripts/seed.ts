@@ -111,9 +111,11 @@ async function main() {
     await orders.cancel({ userId: 'alice', role: 'customer' }, o.order.id, 'Bận việc đột xuất');
     console.log('[seed] tạo 3 đơn mẫu (1 đơn đã hủy)');
 
-    console.log('\nTài khoản mock (AUTH_MODE=mock) - dùng header Authorization:');
-    console.log('  Khách : Bearer mock:alice:customer   |  Bearer mock:bob:customer');
-    console.log('  Admin : Bearer mock:admin1:admin');
+    if (config.auth.mode === 'mock') {
+      console.log('\nTài khoản mock (AUTH_MODE=mock) - dùng header Authorization:');
+      console.log('  Khách : Bearer mock:alice:customer   |  Bearer mock:bob:customer');
+      console.log('  Admin : Bearer mock:admin1:admin');
+    }
     console.log('\nSự kiện:');
     for (const e of created) console.log(`  ${e.id}  [${e.status}] ${e.title}`);
   } finally {

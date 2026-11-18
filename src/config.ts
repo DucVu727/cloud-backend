@@ -16,7 +16,7 @@ function bool(name: string, def: boolean): boolean {
   return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
 }
 
-export type AuthMode = 'mock' | 'jwt' | 'http';
+export type AuthMode = 'local' | 'mock' | 'jwt' | 'http';
 export type PublisherMode = 'mock' | 'azure-queue';
 export type StatsMode = 'mock' | 'http';
 
@@ -33,8 +33,9 @@ export const config = {
   devConsole: bool('DEV_CONSOLE', str('NODE_ENV', 'development') !== 'production'),
 
   auth: {
-    mode: str('AUTH_MODE', 'mock') as AuthMode,
+    mode: str('AUTH_MODE', str('NODE_ENV', 'development') === 'production' ? 'local' : 'mock') as AuthMode,
     jwtSecret: str('AUTH_JWT_SECRET'),
+    tokenTtlSeconds: int('AUTH_TOKEN_TTL_SECONDS', 3600),
     // cho phép viết PEM trên 1 dòng trong .env với "\n"
     jwtPublicKey: str('AUTH_JWT_PUBLIC_KEY').split('\\n').join('\n'),
     serviceUrl: str('AUTH_SERVICE_URL', 'http://localhost:4000'),

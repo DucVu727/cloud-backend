@@ -1,9 +1,10 @@
 import { parseArgs } from 'node:util';
-import jwt from 'jsonwebtoken';
+import { signTestToken } from '../auth/test-token';
 import { config } from '../config';
 
 /**
- * Tạo JWT ngắn hạn để thử API khi AUTH_MODE=jwt (HS256, claim giống backend đang đọc: sub + role).
+ * Tạo JWT ngắn hạn để thử API khi AUTH_MODE=jwt hoặc local (HS256, claim sub + role, kèm iss/aud của chế độ local).
+ * Ở chế độ local, --sub phải là user_id có trong bảng accounts; vai trò lấy từ DB chứ không lấy từ --role.
  *
  *   npm run token -- --sub admin1 --role admin [--ttl 60] [--email a@b.c] [--name "Admin"]
  *
@@ -31,10 +32,9 @@ function main(): void {
   const ttlMinutes = Number(values.ttl);
   if (!Number.isInteger(ttlMinutes) || ttlMinutes < 1 || ttlMinutes > 24 * 60) fail('--ttl là số phút, từ 1 đến 1440.');
 
-  const token = jwt.sign(
-    { sub: values.sub, role: values.role, ...(values.email ? { email: values.email } : {}), ...(values.name ? { name: values.name } : {}) },
+  const token = signTestToken(
+    { sub: values.sub, role: values.role, ttlMinutes, email: values.email, name: values.name },
     secret,
-    { algorithm: 'HS256', expiresIn: ttlMinutes * 60 },
   );
   process.stdout.write(`${token}\n`);
 }
